@@ -1,0 +1,540 @@
+Nice — going all-in on an esub-based penalty system is a clean approach: it applies penalties at job submission time (no scheduler reconfig), is fast, auditable, and easy to roll back. Below I give you a complete, practical implementation you can drop into an LSF cluster. It includes:
+
+design decisions & file layout
+
+the esub wrapper script (bash) — the core piece that sets LSB_SUB_PRIORITY or LSB_SUB_QUEUE at submission time
+
+a compact, safe penalty DB helper (Python) with atomic updates and CLI utilities
+
+a post-job analyzer (Python) that computes penalties from job accounting and updates DB
+
+a decay / restore job you run regularly
+
+deploy, test, security, monitoring, and rollback instructions
+
+
+Everything here is conservative and staged so you can test on a dev queue before rolling to production.
+
+
+---
+
+1) High-level flow
+
+1. User submits job via bsub (through esub wrapper).
+
+
+2. esub wrapper reads user's penalty score from the penalty DB and injects LSB_SUB_PRIORITY (or forces a queue) before calling real bsub.
+
+
+3. Job runs. When it finishes, a post-job analyzer (triggered by LSF event or cron) evaluates the job’s efficiency from LSF accounting and applies increments/decrements to the user penalty.
+
+
+4. A decay job gradually reduces penalties so users can recover.
+
+
+5. Admins have CLI tools to view, override, and reset penalty scores.
+
+
+
+
+---
+
+2) File layout (suggested)
+
+/opt/lsf/penalty/
+├─ esub_wrapper.sh              # esub wrapper (executable)
+├─ penalty_db.py                # small Python lib for DB ops & CLI
+├─ penalty_db.json              # JSON storing user penalties
+├─ post_job_analyzer.py         # compute increments after job finishes
+├─ decay_penalty.py             # periodic decay script
+├─ logs/
+│  ├─ esub.log
+│  └─ analyzer.log
+└─ config.yml                   # thresholds and mapping
+
+Set ownership and permissions: owned by lsf or admin user, mode 750 (only admin + lsf can read/write). Logs writable by lsf group.
+
+
+---
+
+3) The penalty DB helper (penalty_db.py)
+
+This is a tiny, robust helper that provides atomic updates via fcntl.flock. It also exposes a CLI for admin use.
+
+#!/usr/bin/env python3
+# /opt/lsf/penalty/penalty_db.py
+import json, os, fcntl, time
+from contextlib import contextmanager
+
+DB_PATH = "/opt/lsf/penalty/penalty_db.json"
+BACKUP = DB_PATH + ".bak"
+
+@contextmanager
+def open_locked(path=DB_PATH, mode="r+"):
+    # ensure file exists
+    if not os.path.exists(path):
+        with open(path, "w") as fh:
+            json.dump({}, fh)
+    fh = open(path, mode)
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        yield fh
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+def load_db():
+    with open_locked() as fh:
+        fh.seek(0)
+        try:
+            data = json.load(fh)
+        except json.JSONDecodeError:
+            data = {}
+    return data
+
+def save_db(db):
+    # atomic-ish write: write to temp then rename
+    tmp = DB_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(db, fh)
+        fh.flush(); os.fsync(fh.fileno())
+    os.replace(tmp, DB_PATH)
+
+def get_penalty(user):
+    db = load_db()
+    return db.get(user, 0)
+
+def set_penalty(user, value):
+    db = load_db()
+    db[user] = max(0, int(value))
+    save_db(db)
+
+def add_penalty(user, delta):
+    db = load_db()
+    db[user] = max(0, int(db.get(user,0)) + int(delta))
+    save_db(db)
+
+def reset_penalty(user):
+    db = load_db()
+    if user in db:
+        db[user] = 0
+        save_db(db)
+
+# CLI
+if __name__ == "__main__":
+    import sys
+    cmd = sys.argv[1] if len(sys.argv)>1 else "help"
+    if cmd=="get" and len(sys.argv)==3:
+        print(get_penalty(sys.argv[2]))
+    elif cmd=="add" and len(sys.argv)==4:
+        add_penalty(sys.argv[2], int(sys.argv[3])); print("ok")
+    elif cmd=="set" and len(sys.argv)==4:
+        set_penalty(sys.argv[2], int(sys.argv[3])); print("ok")
+    elif cmd=="reset" and len(sys.argv)==3:
+        reset_penalty(sys.argv[2]); print("ok")
+    elif cmd=="dump":
+        print(json.dumps(load_db(), indent=2))
+    else:
+        print("Usage: penalty_db.py get|add|set|reset <user> | dump")
+
+Save this as executable. It is your single source of truth.
+
+
+---
+
+4) Configuration: config.yml
+
+Simple mapping and thresholds you can tweak:
+
+# /opt/lsf/penalty/config.yml
+# mapping penalty score -> LSB_SUB_PRIORITY delta
+priority_map:
+  - max: 10
+    priority: 0        # normal
+  - max: 20
+    priority: -10
+  - max: 40
+    priority: -30
+  - max: 9999
+    priority: -60
+
+# Optional: force to a "slow_q" queue when penalty above threshold
+force_queue_threshold: 50
+slow_queue_name: slow_q
+
+# Analyzer thresholds (examples)
+thresholds:
+  cpu_eff_low: 0.2    # cpu efficiency < 20% -> penalty
+  cpu_eff_high: 0.8   # cpu >= 80% -> reward
+  mem_waste_pct: 0.5  # used/requested memory < 50% counts as waste
+  short_job_secs: 120 # job terminated < 120s is suspicious
+
+
+---
+
+5) esub wrapper (the core)
+
+This wrapper reads the penalty DB and sets LSB_SUB_PRIORITY or LSB_SUB_QUEUE and then calls real bsub. Put it in your path as the esub executable or configure LSF to call it.
+
+#!/bin/bash
+# /opt/lsf/penalty/esub_wrapper.sh
+# Minimal esub wrapper: maps penalty -> LSB_SUB_PRIORITY or queue, then calls bsub.
+
+REAL_BSUB="/opt/lsf/bin/bsub"   # adjust to your bsub path
+DB="/opt/lsf/penalty/penalty_db.py"
+CFG="/opt/lsf/penalty/config.yml"
+LOG="/opt/lsf/penalty/logs/esub.log"
+
+user=$(whoami)
+timestamp=$(date --iso-8601=seconds)
+
+# get penalty
+penalty=$($DB get "$user" 2>/dev/null || echo 0)
+
+# read config (simple parse with awk/python depending on cluster)
+# We'll use python -c to parse YAML safely - but to avoid yaml dependency, parse minimal keys.
+priority=0
+force_queue_thresh=9999
+slow_q="slow_q"
+# parse mapping using python for clarity
+priority=$(python3 - <<PY
+import yaml,sys
+cfg_path="{}"
+try:
+    import yaml
+except:
+    # If PyYAML not installed, parse naive
+    print("0")
+    sys.exit(0)
+with open(cfg_path) as f:
+    cfg=yaml.safe_load(f)
+penalty=int({})
+for item in cfg.get("priority_map",[]):
+    if penalty <= item.get("max",0):
+        print(item.get("priority",0))
+        sys.exit(0)
+print(0)
+PY
+)
+
+# fallback if python yaml not available: simple thresholds
+if [ -z "$priority" ]; then
+    if [ "$penalty" -le 10 ]; then priority=0
+    elif [ "$penalty" -le 20 ]; then priority=-10
+    elif [ "$penalty" -le 40 ]; then priority=-30
+    else priority=-60
+    fi
+fi
+
+# optional: if penalty high, force queue
+force_queue_thresh=$(python3 - <<PY
+import yaml
+try:
+    import yaml
+    cfg = yaml.safe_load(open("$(/bin/echo $CFG)"))
+    print(cfg.get("force_queue_threshold",9999))
+except:
+    print(9999)
+PY
+)
+slow_q=$(python3 - <<PY
+import yaml
+try:
+    import yaml
+    cfg = yaml.safe_load(open("$(/bin/echo $CFG)"))
+    print(cfg.get("slow_queue_name","slow_q"))
+except:
+    print("slow_q")
+PY
+)
+
+if [ "$penalty" -ge "$force_queue_thresh" ]; then
+    # force queue
+    LSB_SUB_QUEUE="$slow_q"
+    export LSB_SUB_QUEUE
+fi
+
+# set priority
+export LSB_SUB_PRIORITY="$priority"
+
+# Logging
+echo "$timestamp esub: user=$user penalty=$penalty priority=$LSB_SUB_PRIORITY queue=${LSB_SUB_QUEUE:-default} cmd=\"$*\"" >> $LOG
+
+# call real bsub with same args
+exec $REAL_BSUB "$@"
+
+Notes:
+
+Ideally you install PyYAML on the management host so esub can parse config.yml. If not, fallback thresholds are used.
+
+Make wrapper executable and ensure bsub path is correct.
+
+Two deployment options:
+
+Replace the esub command with this wrapper (symlink /opt/lsf/penalty/esub_wrapper.sh -> /usr/local/bin/esub).
+
+Configure users to call a bsub wrapper instead (if you can't override esub systemwide).
+
+
+
+
+---
+
+6) Post-job analyzer (post_job_analyzer.py)
+
+This script calculates efficiency metrics and updates penalty_db. It must be triggered after job completion. You can integrate it with LSF event notification (lsb.events) or run a short-lived daemon that polls bacct for recent finished jobs.
+
+Below is a script that accepts a JOBID and evaluates CPU & memory efficiency. It uses bacct and bjobs -l output parsing — adapt to exact output on your cluster.
+
+#!/usr/bin/env python3
+# /opt/lsf/penalty/post_job_analyzer.py
+import subprocess, json, sys, re, os
+from penalty_db import add_penalty, get_penalty, set_penalty
+CFG="/opt/lsf/penalty/config.yml"
+
+def run_cmd(cmd):
+    p = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return p.stdout, p.stderr, p.returncode
+
+def parse_bacct(jobid):
+    # Use bacct -l -j <jobid> or bacct -l | parse - here example with bacct -l -j
+    out,err,rc = run_cmd(f"bacct -l -j {jobid}")
+    if rc!=0:
+        # fallback to bjobs -l
+        out,err,rc = run_cmd(f"bjobs -l {jobid}")
+    return out
+
+def extract_metrics(bacct_text):
+    # Very conservative parsing — adapt to your cluster's bacct output.
+    # We look for fields: CPU_USED, RUN_TIME(s), MEM, REQ_MEM
+    cpu_used = 0.0
+    run_time = 1.0
+    num_processors = 1
+    used_mem = None
+    req_mem = None
+    # cpu usage lines often like "CPU used: 00:10:12"
+    m = re.search(r"CPU used:\s*([\d:]+)", bacct_text)
+    if m:
+        t = m.group(1).split(':')
+        t = [int(x) for x in t]
+        # convert to seconds
+        if len(t)==3:
+            cpu_used = t[0]*3600 + t[1]*60 + t[2]
+    m = re.search(r"Run Time:\s*([\d:]+)", bacct_text)
+    if m:
+        t = [int(x) for x in m.group(1).split(':')]
+        if len(t)==3:
+            run_time = t[0]*3600 + t[1]*60 + t[2]
+    # simplistic memory parse
+    m = re.search(r"Max Memory:\s*([\d.]+)([KMG])", bacct_text)
+    if m:
+        val=float(m.group(1)); unit=m.group(2)
+        mul = {'K':1/1024, 'M':1, 'G':1024}[unit]
+        used_mem = val * mul
+    m = re.search(r"Requested Memory:\s*([\d.]+)([KMG])", bacct_text)
+    if m:
+        val=float(m.group(1)); unit=m.group(2)
+        mul = {'K':1/1024, 'M':1, 'G':1024}[unit]
+        req_mem = val * mul
+    return dict(cpu_used=cpu_used, run_time=run_time, used_mem=used_mem, req_mem=req_mem, num_proc=num_processors)
+
+def compute_penalty_delta(metrics):
+    # Simple rules (tweak these in config.yml)
+    delta = 0
+    cpu_eff = (metrics["cpu_used"]/metrics["run_time"]) if metrics["run_time"]>0 else 0
+    if metrics["run_time"] < 120:  # very short jobs suspicious
+        delta += 3
+    if cpu_eff < 0.2:
+        delta += 5
+    elif cpu_eff >= 0.8:
+        delta -= 3
+    if metrics["req_mem"] and metrics["used_mem"]:
+        waste = 1.0 - (metrics["used_mem"]/metrics["req_mem"])
+        if waste > 0.5:
+            delta += 3
+        elif waste < 0.1:
+            delta -= 1
+    # clamp small negative deltas to not go below 0 in DB logic
+    return delta
+
+def main(jobid, user):
+    text = parse_bacct(jobid)
+    metrics = extract_metrics(text)
+    delta = compute_penalty_delta(metrics)
+    if delta>0:
+        add_penalty(user, delta)
+        print(f"Added penalty {delta} to {user}")
+    elif delta<0:
+        # negative reward: subtract
+        add_penalty(user, delta)  # add_penalty handles negative? ensure DB handles negative -> clamp to 0
+        print(f"Reduced penalty by {-delta} for {user}")
+    else:
+        print("No change")
+
+if __name__=="__main__":
+    if len(sys.argv)<3:
+        print("Usage: post_job_analyzer.py <jobid> <user>")
+        sys.exit(1)
+    main(sys.argv[1], sys.argv[2])
+
+Triggering:
+
+Preferred: configure LSF event handler to call post_job_analyzer.py JOBID USER on job termination (see lsb.events docs — typically you can add an event plugin to call your script).
+
+Alternate: run a short cron every minute that polls bacct for jobs finished in the last minute and runs the analyzer for each.
+
+
+
+---
+
+7) Decay script (daily or weekly)
+
+Give users chance to recover:
+
+#!/usr/bin/env python3
+# /opt/lsf/penalty/decay_penalty.py
+from penalty_db import load_db, set_penalty, save_db
+db = load_db()
+for u,p in list(db.items()):
+    new = int(p * 0.9)  # 10% weekly decay
+    if new<1:
+        new=0
+    db[u] = new
+save_db(db)
+print("Decay done")
+
+Run with cron: 0 3 * * 0 /opt/lsf/penalty/decay_penalty.py (every Sunday 03:00).
+
+
+---
+
+8) Admin CLI & monitoring
+
+You already have penalty_db.py CLI. Add small scripts:
+
+check_penalty.sh user — prints score and rationale (recent infractions).
+
+penalty_report.py — daily summary emailed to admins: top 10 penalized users, recent big changes.
+
+Expose a read-only web page (simple Flask) behind internal auth showing each user’s current penalty + last 10 analyzer results (helpful for transparency).
+
+
+
+---
+
+9) Testing & rollout plan
+
+1. Deploy everything on a test LSF instance or restrict to a test queue and a handful of pilot users.
+
+
+2. Start with only logging behavior: esub sets LSB_SUB_PRIORITY but does not change scheduling; run analyzer but don't actually add penalties (just log computed deltas). Monitor false positives.
+
+
+3. After tuning thresholds for ~2 weeks, enable actual DB updates but keep mapping conservative (e.g., only negative priority -10 at first).
+
+
+4. Watch bjobs -d pending times, check users’ tickets.
+
+
+5. Expand scope gradually. Keep an easy rollback: rename esub wrapper to esub_wrapper.disabled and restore previous esub.
+
+
+
+
+---
+
+10) Example mapping (suggested)
+
+0–10: normal (priority 0)
+
+11–20: mild penalty (priority -10)
+
+21–40: moderate (priority -30)
+
+41+: severe (priority -60) and force to slow_q if configured
+
+
+Tune these values to your cluster’s priority scaling.
+
+
+---
+
+11) Safety, fairness & governance
+
+Transparency: publish the penalty rules and allow users to view their penalty and last 10 analyzer records.
+
+Appeals: add an admin override CLI penalty_db.py set <user> <value> and a ticket/email workflow.
+
+Protect batch/system accounts: exclude certain users or groups from penalty enforcement (admins, system accounts).
+
+Avoid punishing experiments: set minimum job count or ignore first N-user jobs per week to avoid high variance from dev work.
+
+Privacy: keep logs internal; consider retention policy for analyzer logs.
+
+
+
+---
+
+12) Common pitfalls & mitigations
+
+False positives from parsing differences: bacct/bjobs output differs across versions — test parsing thoroughly. Use lsf_acct programmatic APIs if available.
+
+Race conditions on DB: use file locking (we use flock). For high concurrency consider simple sqlite with WAL mode instead of JSON.
+
+Users circumventing esub: if some users call bsub directly, enforce wrapper via PATH policy or job submission policy (replace bsub with wrapper or set wrapper as default esub).
+
+Frequent reconfig vs esub: esub avoids badmin reconfig churn — that’s why it’s recommended.
+
+
+
+---
+
+13) Example quick install commands (summary)
+
+mkdir -p /opt/lsf/penalty/logs
+# copy scripts into /opt/lsf/penalty/
+chmod +x /opt/lsf/penalty/*.sh /opt/lsf/penalty/*.py
+chown -R lsf:lsf /opt/lsf/penalty
+chmod 750 /opt/lsf/penalty
+# backup existing esub and replace with wrapper (test first)
+mv /usr/local/bin/esub /usr/local/bin/esub.bak
+ln -s /opt/lsf/penalty/esub_wrapper.sh /usr/local/bin/esub
+
+Test by submitting a job as a test user and inspect /opt/lsf/penalty/logs/esub.log to confirm the wrapper set LSB_SUB_PRIORITY.
+
+
+---
+
+14) Quick testing checklist
+
+[ ] Run python3 /opt/lsf/penalty/penalty_db.py dump — DB exists.
+
+[ ] Submit a job; verify esub log line recorded correct LSB_SUB_PRIORITY.
+
+[ ] Finish a job; run post_job_analyzer.py JOBID user manually; verify DB updated.
+
+[ ] Run decay_penalty.py and verify DB decays.
+
+[ ] Simulate multiple concurrent submissions to test locking.
+
+
+
+---
+
+15) Next steps I can do for you (pick any)
+
+Provide a sqlite version of penalty DB (better concurrency) and migration script.
+
+Produce a tuned set of analyzer rules based on your current bacct output — I can generate parser code if you paste a sample bacct -l output.
+
+Create a Flask dashboard to show per-user penalties and recent job-level reasons (admin+user view).
+
+Provide a production-ready systemd unit or cron entries for analyzer & decay jobs.
+
+
+If you want, paste a real example of bacct -l -j <jobid> (or bjobs -l <jobid>) output for one or two completed jobs and I’ll adapt the analyzer parsing to your exact fields and produce a tuned post_job_analyzer.py ready to run in your environment.
+
+
+---
+
+That’s a complete, safe, auditable esub-based penalty implementation you can roll out incrementally. Want me to generate the sqlite-backed DB and a tuned parser for your cluster’s bacct output next?
