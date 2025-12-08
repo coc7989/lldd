@@ -1,0 +1,751 @@
+Below is a fully detailed, hierarchical site map for your mySLURM User Experience Dashboard formatted for Relume (clear parent–child structure, page hierarchy, components, and modal-level interactions).
+I’ve separated User-facing, Admin-facing, and System-level pages.
+You can directly paste this into Relume or use it to build a component library.
+
+
+---
+
+✅ mySLURM UX Dashboard — Full Site Map (Relume Format)
+
+(Includes pages, subpages, modals, components, and functional sections)
+
+
+---
+
+0. Global Structure
+
+Home / Dashboard Landing
+
+Login / Authentication
+
+Cluster Selector (Global Control)
+
+Global Notifications Center
+
+User Profile & Settings
+
+Admin Portal Switch
+
+
+
+---
+
+1. USER-FACING EXPERIENCE
+
+
+---
+
+1.1 Dashboard Home (User)
+
+Cluster Status Summary
+
+Current load (CPU/Mem)
+
+Total Slots / Used / Free (cards)
+
+Quick job stats (Running, Pending, Failed, Completed)
+
+
+Quick Actions
+
+Submit Job (optional)
+
+Kill Job
+
+Bmod Job
+
+Open Chatbot
+
+
+Recent Notifications (Webex + internal)
+
+Active Alerts
+
+Stuck Jobs
+
+Low Efficiency Jobs
+
+Over/Under Allocation Warning
+
+
+
+
+---
+
+2. Cluster Selection & Overview
+
+Page: /cluster-overview
+
+Cluster Selector
+
+India
+
+Dallas
+
+China
+
+Freising
+
+
+Per-Cluster KPIs
+
+Live Load Graph
+
+Slots Used vs Free
+
+Partition Summary (cards)
+
+Node State Overview
+
+
+Cluster Health Heatmap
+
+Alerts
+
+Drain nodes
+
+Down nodes
+
+Node failures (user-facing severity only)
+
+
+
+
+---
+
+3. Jobs
+
+3.1 Jobs Overview Page
+
+Tabs:
+
+1. Running Jobs
+
+
+2. Pending Jobs + Reasons
+
+
+3. Completed Jobs
+
+
+4. Exited/Failed Jobs + Reason Categorization
+
+
+5. All Jobs
+
+
+
+
+---
+
+3.2 Job Details Page (/jobs/{id})
+
+Sections:
+
+Header
+
+Status
+
+User
+
+JobID
+
+Partition
+
+Efficiency Badge (Good/Low/Critical)
+
+
+Job Summary
+
+CPU/Mem Requested
+
+CPU/Mem Actual
+
+Node List
+
+Runtime vs Estimated
+
+
+Graphs
+
+CPU usage timeline
+
+Memory usage timeline
+
+Efficiency graph (CPU+Mem)
+
+
+Job Actions
+
+Kill job (modal confirmation)
+
+bmod job (resource/partition changes)
+
+
+Pending Reason Explorer
+
+Exit Reason Explanation
+
+AI Insights
+
+Over/Under allocation messages
+
+Suggested better request parameters
+
+
+
+
+---
+
+3.3 Kill / Bmod Modals
+
+Kill Job Modal
+
+Reason input
+
+Impact summary
+
+
+Bmod Modal
+
+Modify CPU
+
+Modify Memory
+
+Modify Time
+
+Modify Partition
+
+Resource validation
+
+
+
+
+---
+
+4. Limits & Usage
+
+/usage-limits
+
+Sections:
+
+SLA Pool Usage (Current vs Limit) – charts
+
+Slot Usage (Current vs Limit) – charts
+
+Historical Usage Timeline
+
+Partition Priority Access
+
+hwsim
+
+highpriority
+
+lowpriority
+
+
+Elevate QoS Request
+
+Form submission
+
+Admin approval workflow
+
+
+
+
+---
+
+5. LSF → SLURM Helper Bot
+
+/assistant
+
+Sections:
+
+Chatbot UI
+
+"Ask about SLURM"
+
+"Translate LSF Command"
+
+
+Translator Mode
+
+LSF → SLURM Command Conversion
+
+Explanation Panel
+
+
+FAQ
+
+Handbook Quick Search
+
+
+
+---
+
+6. Job History
+
+/job-history
+
+Filters: date, user, job type, cluster
+Sections:
+
+Historical Job List
+
+Compare Jobs (User Version)
+
+Graphical comparison of CPU/Mem usage
+
+
+Slot Utilization per Day
+
+Partition Usage History
+
+Over/Under Allocation Flags
+
+Export job history (CSV/JSON)
+
+
+
+---
+
+7. Stuck Job Detection
+
+/stuck-jobs
+
+Sections:
+
+Zero CPU Usage Jobs
+
+Memory Leak Suspects
+
+Zombie Jobs
+
+Idle Jobs (long-running but doing nothing)
+
+Action Buttons
+
+Kill
+
+Notify user
+
+Mark as investigated
+
+
+
+
+---
+
+8. Notifications
+
+/notifications
+
+Job Failures
+
+Bad Resource Requests
+
+Low Efficiency Alerts
+
+Underutilized Memory Alerts
+
+Webex Integration Settings
+
+Notification Rules
+
+Thresholds
+
+Channels
+
+
+
+
+---
+
+9. Job Prediction Engine
+
+/job-predictions
+
+Sections:
+
+Job Start Time Prediction
+
+Completion Time Prediction
+Based on:
+
+Node Availability
+
+Partition Load
+
+User Priority
+
+Fairshare
+
+Historical Behavior
+
+Graphical Confidence Interval
+
+“Compare With Actual” history
+
+
+
+---
+
+10. User Profile
+
+Profile
+
+Tokens & API Access
+
+Notification Preferences
+
+Saved Queries
+
+Previously translated LSF commands
+
+
+
+---
+
+
+---
+
+ADMIN-FACING EXPERIENCE
+
+
+---
+
+11. Admin Dashboard Home
+
+/admin
+
+Sections:
+
+Cluster-Wide Health Summary
+
+Node Failures (New + Historical)
+
+Active Alerts
+
+Top Pending Jobs
+
+Top SLA Usage
+
+Top Users (Current/Historical)
+
+Efficiency Warnings (Live)
+
+Quick Links
+
+Node Console
+
+Queue Manager
+
+User Manager
+
+
+
+
+---
+
+12. Cluster-Wide Nodes Health
+
+/admin/nodes
+
+Sections:
+
+Node List
+
+CPU Usage / Max
+
+Mem Usage / Max
+
+Node Status: Open/Closed/Down/Draining/Drained
+
+
+Auto Actions
+
+Auto-close on down
+
+Auto-notify infra + users
+
+
+Node Alerts
+
+Node Details Page
+
+Historical CPU/Mem graphs
+
+Jobs running currently
+
+Past failure logs
+
+Drain history
+
+
+
+
+---
+
+13. Queue / Slot Management
+
+/admin/queue-management
+
+Sections:
+
+Queue Summary
+
+Slot Allocation
+
+Approvals
+
+Slot increase/decrease
+
+SLA changes
+
+
+Reprioritize Jobs
+
+Admin bkill / bmod interface
+
+Optimized impact analyzer
+
+
+
+
+---
+
+14. Historical Dashboards (Admin)
+
+/admin/history
+
+Sections:
+
+User-Level History
+
+Slot-Level History
+
+SLA-Level Usage
+
+Job-Level Analysis
+
+Efficiency trends
+
+Failure root causes
+
+
+Node History CPU/Mem
+
+Global Efficiency Dashboard
+
+CPU Waste
+
+Memory Waste
+
+Partition Throughput
+
+Slot Wastage
+
+
+
+
+---
+
+15. User-Level Monitoring
+
+/admin/users
+
+Search user by:
+
+AID
+
+Name
+
+Email
+Sections:
+
+Current Slot Usage
+
+Historical Slot Usage
+
+SLA Pool Usage
+
+Most Inefficient Users
+
+Most Inefficient Jobs
+
+Largest Resource-Heavy Jobs
+
+Actions
+
+Kill/Bmod
+
+Notifications
+
+View user job history
+
+
+
+
+---
+
+16. Stuck / Zombie Job Detection (Admin)
+
+/admin/stuck-jobs
+
+Long pending
+
+Excessive resource usage
+
+Idle jobs
+
+Automated Recommended Action Engine
+
+Admin override
+
+
+
+---
+
+17. Pending Job Intelligence
+
+/admin/pending-intel
+
+Sections:
+
+Top Pending Jobs
+
+Pending Count By User
+
+Pending Due to Limits
+
+Pending Due to Bad Resource Requests
+
+Resource String Parser
+
+Bad string detection
+
+Suggested correction
+
+
+LSFadmin Command Redirection (optional)
+
+
+
+---
+
+18. Cluster Health Intelligence
+
+/admin/health-intel
+
+Sections:
+
+Node Load Patterns
+
+Frequent Node Drain Detector
+
+Node Failure Trend
+
+Nodes Needing Attention
+
+Predictions
+
+Cluster Bottleneck Report
+
+
+
+---
+
+19. Global Efficiency Dashboard
+
+/admin/global-efficiency
+
+Sections:
+
+Cluster CPU Efficiency
+
+Cluster Memory Efficiency
+
+Partition Throughput
+
+Slot Wastage Heatmap
+
+Historical Efficiency Trends
+
+Recommendations
+
+Predictive scaling
+
+User guidance
+
+
+
+
+---
+
+20. System/Logs
+
+/admin/logs
+
+Who killed what job
+
+Who modified what job
+
+Timestamped audit trails
+
+Job-failure logs
+
+Node ops logs
+
+
+
+---
+
+21. Admin Settings
+
+/admin/settings
+
+Webex Integration Management
+
+Access Control / Roles
+
+API Tokens
+
+Notification Rules
+
+Cluster Config
+
+
+
+---
+
+22. Developer / API Docs
+
+/developer
+
+SLURM API Docs
+
+mySLURM API
+
+Webhooks
+
+Event Logs
+
+
+
+---
+
+✔ If you want, I can also generate:
+
+✅ Wireframe structure for each page
+
+✅ Relume component list (cards, tables, modals, sidebars, filters)
+
+✅ IA diagrams in mermaid format
+
+✅ Full UX flow diagrams
+
+✅ Database schema for this platform
+
+✅ System architecture (services, APIs, eventing, ML components)
+
+Just tell me!
